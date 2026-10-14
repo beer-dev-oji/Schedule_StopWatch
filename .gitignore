@@ -1,0 +1,20 @@
+# 依存関係
+node_modules
+.pnp
+.pnp.js
+
+# ビルド成果物
+/dist
+/dist-ssr
+*.local
+
+# 環境変数・シークレット情報（★超重要！）
+.env
+.env.*
+!.env.example
+
+# エディタ・OS固有ファイル
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db

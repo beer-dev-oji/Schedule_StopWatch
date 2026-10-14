@@ -1,0 +1,6 @@
+{
+  "name": "スケジュール記録ストップウォッチ",
+  "description": "日中のスケジュールやタスクの所要時間を日本標準時（JST）で連続記録・可視化できる軽量なタイムトラッカーアプリです。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
