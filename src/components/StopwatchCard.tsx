@@ -8,7 +8,17 @@ interface StopwatchCardProps {
   compact?: boolean;
 }
 
-const QUICK_TAGS = ['開発作業', '会議・打合せ', '資料作成', 'メール・返信', '調査・読書', '休憩'];
+const QUICK_TAGS = ['開発作業', '会議・打合せ', '資料作成', 'メール・連絡', '調査・読書', '休憩'];
+
+// ローカルストレージ用のキー
+const ACTIVE_TIMER_KEY = 'active_timer_state_v1';
+
+interface ActiveTimerState {
+  taskName: string;
+  startTimeIso: string;
+  accumulatedSeconds: number; // 停止していた時間などを考慮する場合の積算（今回はシンプルに開始時刻からの差分ベース）
+  isRunning: boolean;
+}
 
 export default function StopwatchCard({ onSaveEntry, compact = false }: StopwatchCardProps) {
   const [taskName, setTaskName] = useState('');
@@ -17,20 +27,61 @@ export default function StopwatchCard({ onSaveEntry, compact = false }: Stopwatc
   const [startTime, setStartTime] = useState<Date | null>(null);
 
   const timerRef = useRef<number | null>(null);
-  const lastTickRef = useRef<number>(Date.now());
 
-  // タイマーの正確な動作（バックグラウンドでもズレにくいタイムスタンプ差分方式）
+  // 1. マウント時（アプリ起動時）にローカルストレージから「生きていたタイマー」を復元
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(ACTIVE_TIMER_KEY);
+      if (saved) {
+        const state: ActiveTimerState = JSON.parse(saved);
+        if (state.startTimeIso) {
+          const start = new Date(state.startTimeIso);
+          setStartTime(start);
+          setTaskName(state.taskName || '');
+
+          if (state.isRunning) {
+            // アプリを閉じていた間も時間が進んでいるので、現在時刻との差分を計算
+            const now = Date.now();
+            const diffSec = Math.floor((now - start.getTime()) / 1000);
+            setElapsedSeconds(Math.max(0, diffSec));
+            setIsRunning(true);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Failed to restore timer state from localStorage', err);
+    }
+  }, []);
+
+  // 2. 状態が変わるたびにローカルストレージへタイマー状態を保存
+  useEffect(() => {
+    try {
+      if (startTime && (isRunning || elapsedSeconds > 0)) {
+        const state: ActiveTimerState = {
+          taskName,
+          startTimeIso: startTime.toISOString(),
+          accumulatedSeconds: elapsedSeconds,
+          isRunning,
+        };
+        localStorage.setItem(ACTIVE_TIMER_KEY, JSON.stringify(state));
+      } else {
+        localStorage.removeItem(ACTIVE_TIMER_KEY);
+      }
+    } catch (err) {
+      console.error('Failed to save timer state to localStorage', err);
+    }
+  }, [taskName, startTime, elapsedSeconds, isRunning]);
+
+  // 3. タイマーの正確な刻み（1秒ごと、バックグラウンド復帰後もズレにくい設計）
   useEffect(() => {
     if (isRunning) {
-      lastTickRef.current = Date.now();
       timerRef.current = window.setInterval(() => {
-        const now = Date.now();
-        const delta = Math.floor((now - lastTickRef.current) / 1000);
-        if (delta >= 1) {
-          setElapsedSeconds((prev) => prev + delta);
-          lastTickRef.current = now;
+        if (startTime) {
+          const now = Date.now();
+          const diffSec = Math.floor((now - startTime.getTime()) / 1000);
+          setElapsedSeconds(Math.max(0, diffSec));
         }
-      }, 200);
+      }, 500); // 0.5秒おきにチェックして現在時刻との差分で同期
     } else if (timerRef.current) {
       clearInterval(timerRef.current);
     }
@@ -38,13 +89,21 @@ export default function StopwatchCard({ onSaveEntry, compact = false }: Stopwatc
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [isRunning]);
+  }, [isRunning, startTime]);
 
   const handleStart = () => {
+    const now = new Date();
+    const currentStart = startTime || now;
     if (!startTime) {
-      setStartTime(new Date());
+      setStartTime(currentStart);
     }
-    lastTickRef.current = Date.now();
+    // もし一時停止からの再開の場合、開始時刻を「現在時刻 - すでに経過した秒数」に再設定してジワッとつなげる
+    if (elapsedSeconds > 0 && !startTime) {
+      const adjustedStart = new Date(Date.now() - elapsedSeconds * 1000);
+      setStartTime(adjustedStart);
+    } else if (!startTime) {
+      setStartTime(now);
+    }
     setIsRunning(true);
   };
 
@@ -56,6 +115,7 @@ export default function StopwatchCard({ onSaveEntry, compact = false }: Stopwatc
     setIsRunning(false);
     setElapsedSeconds(0);
     setStartTime(null);
+    localStorage.removeItem(ACTIVE_TIMER_KEY);
   };
 
   const handleSaveAndStop = () => {
@@ -71,11 +131,12 @@ export default function StopwatchCard({ onSaveEntry, compact = false }: Stopwatc
       durationSeconds: Math.max(elapsedSeconds, 1),
     });
 
-    // 状態リセット
+    // 状態リセット ＆ ローカルストレージ掃除
     setIsRunning(false);
     setElapsedSeconds(0);
     setStartTime(null);
     setTaskName('');
+    localStorage.removeItem(ACTIVE_TIMER_KEY);
   };
 
   const handleNextTask = () => {
@@ -91,10 +152,10 @@ export default function StopwatchCard({ onSaveEntry, compact = false }: Stopwatc
       });
     }
 
-    // すぐに次のタスクを開始
+    // すぐに次のタスクを開始（ローカルストレージも更新される）
+    const now = new Date();
     setElapsedSeconds(0);
-    setStartTime(new Date());
-    lastTickRef.current = Date.now();
+    setStartTime(now);
     setIsRunning(true);
     setTaskName('');
   };
@@ -102,9 +163,8 @@ export default function StopwatchCard({ onSaveEntry, compact = false }: Stopwatc
   return (
     <div
       id="stopwatch-container"
-      className={`bg-white rounded-2xl border border-stone-200 shadow-sm transition-all ${
-        compact ? 'p-4' : 'p-6 sm:p-8'
-      }`}
+      className={`bg-white rounded-2xl border border-stone-200 shadow-sm transition-all ${compact ? 'p-4' : 'p-6 sm:p-8'
+        }`}
     >
       {/* タスク入力欄 */}
       <div className="mb-4">
@@ -120,17 +180,17 @@ export default function StopwatchCard({ onSaveEntry, compact = false }: Stopwatc
             type="text"
             value={taskName}
             onChange={(e) => setTaskName(e.target.value)}
-            placeholder="例: プロジェクト企画書の作成、顧客MTG..."
+            placeholder="例: プロジェクト設計書作成、社内MTG..."
             className="w-full px-4 py-2.5 bg-stone-50 border border-stone-200 rounded-xl text-stone-900 placeholder:text-stone-400 focus:outline-none focus:ring-2 focus:ring-stone-900/10 focus:border-stone-800 transition-all text-sm sm:text-base font-medium"
           />
         </div>
 
-        {/* クイックタグ入力（通常表示時のみ） */}
+        {/* クイックタグ入力 */}
         {!compact && (
           <div className="flex flex-wrap gap-1.5 mt-2.5 items-center">
             <span className="text-[11px] text-stone-400 font-medium flex items-center gap-1 mr-1">
               <Sparkles className="w-3 h-3 text-amber-500" />
-              候補:
+              クイック:
             </span>
             {QUICK_TAGS.map((tag) => (
               <button
@@ -159,9 +219,10 @@ export default function StopwatchCard({ onSaveEntry, compact = false }: Stopwatc
           {startTime ? (
             <span>
               開始時刻 (JST): <strong className="text-stone-700">{formatJSTTime(startTime)}</strong>
+              {isRunning && <span className="ml-2 text-emerald-600 font-semibold">● 計測中</span>}
             </span>
           ) : (
-            <span>待機中（スタートでJST現在時刻を自動取得）</span>
+            <span>待機中（スタートでJST現在時刻を自動取得開始）</span>
           )}
         </div>
       </div>
@@ -190,17 +251,16 @@ export default function StopwatchCard({ onSaveEntry, compact = false }: Stopwatc
           </button>
         )}
 
-        {/* 完了して保存ボタン */}
+        {/* 記録して保存ボタン */}
         <button
           id="btn-save-entry"
           type="button"
           disabled={elapsedSeconds === 0 && !startTime}
           onClick={handleSaveAndStop}
-          className={`inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl font-medium text-sm sm:text-base transition-all cursor-pointer ${
-            elapsedSeconds > 0 || startTime
+          className={`inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl font-medium text-sm sm:text-base transition-all cursor-pointer ${elapsedSeconds > 0 || startTime
               ? 'bg-emerald-600 hover:bg-emerald-700 text-white active:scale-[0.98] shadow-sm'
               : 'bg-stone-100 text-stone-400 cursor-not-allowed border border-stone-200'
-          }`}
+            }`}
         >
           <Square className="w-4 h-4 fill-current" />
           記録して保存
@@ -215,7 +275,7 @@ export default function StopwatchCard({ onSaveEntry, compact = false }: Stopwatc
           title="現在のタスクを保存して、すぐに新しいタスクの記録を開始します"
         >
           <ArrowRight className="w-4 h-4 text-stone-600" />
-          次のタスクへ連続
+          次のタスクへ
         </button>
 
         {/* リセット */}
